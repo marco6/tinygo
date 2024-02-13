@@ -15,7 +15,6 @@ require (
 	github.com/mattn/go-tty v0.0.4
 	github.com/sigurn/crc16 v0.0.0-20211026045750-20ab5afb07e3
 	go.bug.st/serial v1.6.0
-	golang.org/x/net v0.20.0
 	golang.org/x/sys v0.16.0
 	golang.org/x/tools v0.17.0
 	gopkg.in/yaml.v2 v2.4.0
@@ -31,5 +30,4 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-isatty v0.0.12 // indirect
-	golang.org/x/text v0.14.0 // indirect
 )

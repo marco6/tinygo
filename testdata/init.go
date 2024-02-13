@@ -109,3 +109,10 @@ func sliceString(s string, start, end int) string {
 func sliceSlice(s []int, start, end int) []int {
 	return s[start:end]
 }
+
+type asd struct{}
+
+func init() {
+	_, _ = any(asd{}).(interface{ x() }) // this crashes the compiler
+	_, _ = any(0).(interface{ x() })     // this crashes the compiler
+}

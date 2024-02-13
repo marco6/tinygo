@@ -12,6 +12,7 @@ import (
 	"go/types"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
@@ -117,23 +118,18 @@ func (c *compilerContext) pkgPathPtr(pkgpath string) llvm.Value {
 	return pkgPathPtr
 }
 
+var lock = &sync.Mutex{}
+
 // getTypeCode returns a reference to a type code.
 // A type code is a pointer to a constant global that describes the type.
 // This function returns a pointer to the 'kind' field (which might not be the
 // first field in the struct).
 func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 	ms := c.program.MethodSets.MethodSet(typ)
-	hasMethodSet := ms.Len() != 0
-	if _, ok := typ.Underlying().(*types.Interface); ok {
-		hasMethodSet = false
-	}
-
 	var numMethods int
-	if hasMethodSet {
-		for i := 0; i < ms.Len(); i++ {
-			if ms.At(i).Obj().Exported() {
-				numMethods++
-			}
+	for i := 0; i < ms.Len(); i++ {
+		if ms.At(i).Obj().Exported() {
+			numMethods++
 		}
 	}
 
@@ -169,6 +165,8 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 		// Regular type (named or otherwise).
 		global = c.mod.NamedGlobal(globalName)
 	}
+
+	var hasMethodSet bool
 	if global.IsNil() {
 		var typeFields []llvm.Value
 		// Define the type fields. These must match the structs in
@@ -179,6 +177,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 		}
 		switch typ := typ.(type) {
 		case *types.Basic:
+			hasMethodSet = true
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
 			)
@@ -188,6 +187,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 			if pkg := typ.Obj().Pkg(); pkg != nil {
 				pkgname = pkg.Name()
 			}
+			hasMethodSet = true
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "numMethods", types.Typ[types.Uint16]),
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
@@ -196,23 +196,27 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				types.NewVar(token.NoPos, nil, "name", types.NewArray(types.Typ[types.Int8], int64(len(pkgname)+1+len(name)+1))),
 			)
 		case *types.Chan:
+			hasMethodSet = true
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "numMethods", types.Typ[types.Uint16]), // reuse for select chan direction
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
 				types.NewVar(token.NoPos, nil, "elementType", types.Typ[types.UnsafePointer]),
 			)
 		case *types.Slice:
+			hasMethodSet = true
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "numMethods", types.Typ[types.Uint16]),
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
 				types.NewVar(token.NoPos, nil, "elementType", types.Typ[types.UnsafePointer]),
 			)
 		case *types.Pointer:
+			hasMethodSet = true
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "numMethods", types.Typ[types.Uint16]),
 				types.NewVar(token.NoPos, nil, "elementType", types.Typ[types.UnsafePointer]),
 			)
 		case *types.Array:
+			hasMethodSet = true
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "numMethods", types.Typ[types.Uint16]),
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
@@ -221,6 +225,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				types.NewVar(token.NoPos, nil, "sliceOf", types.Typ[types.UnsafePointer]),
 			)
 		case *types.Map:
+			hasMethodSet = true
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "numMethods", types.Typ[types.Uint16]),
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
@@ -228,6 +233,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				types.NewVar(token.NoPos, nil, "keyType", types.Typ[types.UnsafePointer]),
 			)
 		case *types.Struct:
+			hasMethodSet = true
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "numMethods", types.Typ[types.Uint16]),
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
@@ -246,6 +252,10 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
 			)
 			// TODO: signature params and return values
+		}
+		if _, ok := typ.Underlying().(*types.Interface); ok {
+			hasMethodSet = false
+			numMethods = 0
 		}
 		if hasMethodSet {
 			// This method set is appended at the start of the struct. It is
@@ -442,6 +452,12 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				AlignInBits: uint32(alignment * 8),
 			})
 			global.AddMetadata(0, diglobal)
+		}
+	} else {
+		globalType := global.GlobalValueType()
+		globalFields := globalType.StructElementTypes()
+		if len(globalFields) > 0 && globalFields[0] != c.ctx.Int8Type() {
+			hasMethodSet = true
 		}
 	}
 	offset := uint64(0)
